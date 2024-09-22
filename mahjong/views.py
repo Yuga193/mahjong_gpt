@@ -1,16 +1,55 @@
-
 import os
 import json
 import random
 import dotenv
-import google.generativeai as genai
+import openai
 from django.views.generic import TemplateView
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.shortcuts import render
 
 # .envファイルから環境変数を読み込む
 dotenv.load_dotenv()
 
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+def get_gpt_commentary(doraA, hand, player_wind, round_wind, selectedTile):
+    prompt = (f"""
+自風: {player_wind}, 場風: {round_wind}<br>
+ドラ: {doraA}<br>
+捨て牌: {selectedTile}<br>
+手牌: {hand}<br><br>
+
+手牌を表示する際は ["1m", "2m", "3m", "1p", "2p", "3p", "1s", "2s", "3s", "東", "南", "白", "發", "中"] ではなく、 [1m, 2m, 3m, 1p, 2p, 3p, 1s, 2s, 3s, 東, 南, 白, 發, 中] の形式で表示してください。<br>
+文中に * を使用しないでください。<br>
+自風、場風、ドラ、捨て牌、手牌のそれぞれの項目の後に "<br>" をつけて改行してください。<br>
+手牌の改行には、 "<br>" を2回挿入し、手牌表示の前後で改行を行ってください。<br>
+解説の冒頭で、結論として最適な捨て牌を先に提示してください。その後、その理由を簡潔に説明してください。説明は冗長にならないようにしてください。
+**巡目や局の進行状況については考慮せず、現在の手牌に基づいて分析を行ってください。推測による判断は行わないでください。
+
+解説を行う際、以下の要素を考慮してください。
+順子と刻子を優先して残し、待ちの形（両面待ち、カンチャン待ち、ペンチャン待ちなど）を崩さないようにする。
+役牌（東、南、西、北、白、發、中）は、重なる可能性を考慮しつつも、孤立牌である場合は優先して処理する。
+ドラの活用: 手牌にドラがある場合、最大限生かすように判断する。手牌にドラがない場合は効率重視。
+手牌の効率: 孤立している牌や無駄牌を優先して切る。リャンメン待ちが崩れないようにすることが大切。
+高得点の手や役の可能性: 一盃口や三色などの役を意識し、役が狙える形は優先して残す。
+安全性と防御: 必要に応じて、終盤に向けて安全牌を意識して残す。
+
+"""
+    )
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "あなたは麻雀の専門家です。"},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1000
+        )
+        return response.choices[0].message['content'].strip()
+    except Exception as e:
+        return f"Error occurred while generating commentary: {str(e)}"
 # 麻雀の全牌リスト
 ALL_TILES = [tile for tile in [
     "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m",
@@ -23,7 +62,7 @@ ALL_TILES = [tile for tile in [
 def generate_random_hand():
     tiles = random.sample(ALL_TILES, k=24)  # 重複なしで24枚の牌を選ぶ
     doraA = tiles[0]  # ユーザーが見えるドラ
-    doraB = tiles[1:5] #存在してるがユーザーからは見えないドラ
+    doraB = tiles[1:5]  # 存在してるがユーザーからは見えないドラ
     ura_dora = tiles[5:10]  # 次の5枚を裏ドラとする
     hand = tiles[10:]  # 残りの牌を手牌とする
 
@@ -46,103 +85,35 @@ class QuestionView(TemplateView):
         context['round_wind'] = round_wind
         return context
 
-def configure_api():
-    # 環境変数からGoogle APIキーを取得
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-    # APIキーが設定されていない場合はエラーを発生
-    if not GOOGLE_API_KEY:
-        raise ValueError("Google API key is missing")
-    # APIキーを用いてGoogle AIを設定
-    genai.configure(api_key=GOOGLE_API_KEY)
-    # AIモデルを指定
-    return genai.GenerativeModel("gemini-1.5-flash")
-
 @csrf_exempt
 def analyze_hand(request):
     if request.method == 'POST':
-        data = json.loads(request.body)
-        selectedTile = data.get('selectedTile')
-        hand = data.get('hand')
-        doraA = data.get("doraA")
-        player_wind = data.get("playerWind")  # POSTデータから取得
-        round_wind = data.get("roundWind")
+        try:
+            data = json.loads(request.body)
+            selectedTile = data.get('selectedTile')
+            hand = json.loads(data.get('hand'))
+            doraA = data.get("doraA")
+            player_wind = data.get("playerWind")
+            round_wind = data.get("roundWind")
 
-        # ロール設定プロンプトと手牌情報を組み合わせてAIに渡す
-        prompt = f"""
-    あなたは麻雀を熟知した麻雀のプロです。プレイヤーが選択した牌と手牌の情報を受け取り、以下の観点から解説を日本語で提供してください。
+            commentary = ""
+            # ChatGPT APIを呼び出して講評を取得
+            gpt_commentary = get_gpt_commentary(doraA, hand, player_wind, round_wind, selectedTile)
+            commentary += f"{gpt_commentary}"  # ここでGPTの講評を追加
 
-### 回答テンプレート
-自風: {player_wind},場風: {round_wind}<br>
-ドラ: {doraA}<br>
-捨て牌: {selectedTile}<br>
-手牌: {hand}<br>
-<br>
+            response_data = {
+                'commentary': commentary,
+                'gpt_commentary': gpt_commentary,
+                'player_wind': player_wind,
+                'round_wind': round_wind,
+                'doraA': doraA,
+                'selectedTile': selectedTile,
+                'hand': hand,
+                'display_info': f"自風: {player_wind}, 場風: {round_wind}, ドラ: {doraA}, 手牌: {hand}, 捨牌: {selectedTile}"
+            }
 
-- また回答を作成する際は手牌は["1m","2m","3m","1p","2p","3p","1s","2s","3s","東","南","白","發","中"]と出力するのではなく、[1m,2m,3m,1p,2p,3p,1s,2s,3s,東,南,白,發,中]と出力してください。
-- 文章には*を入れないでください
-- 自風,場風を言い終えたあとは改行してからドラを言い、ドラを言い終えたあとは改行してから捨て牌を言い、捨て牌を言い終えたあとは改行してから手牌を言って、手牌を言い終えたら改行してから本文に入ってください
-- 改行する際は文末に”<br>”とつけてください
-- 文頭にも*はいれないでください
-- また手牌の時は<br>をつけて改行したら、改行先でもう一度<br>をつけてください
-- 最初に<strong>を入れて、解説に入る前に</strong>で締めてください
-
-### プロンプト：
-与えられた14枚の麻雀の手牌({hand})から、自分で捨て牌を選び、その理由を説明してください。また説明する際は以下の要素を考慮してください。
-
-- 100文字以内で簡潔に答えてください。
-- 最後に理由を述べて、あなたなら何を切るか答えてください。
-- ユーザーは{selectedTile}を捨てます。それに対して以下の観点から講評してください。
-
---1. 順子と刻子を最優先で残す。
---2. 役牌の重なりを優先する。
---3. 対子や三色（異なるスーツで同じ数字の順子）を優先して残す。
---4. 字牌（東、南、西、北、白、發、中）は、自風牌、場風牌、役牌以外は優先的に処理する。
---5. 無駄牌（他の牌と繋がりにくい牌）を優先して切る。
---6. ポンやチーの可能性を考える。
---7. カンチャン（両端に隙間のある形）やペンチャン（端の形）を意識する。
---8. 役の種: (例: 三色同順、一盃口、役牌など)
---9. ドラの活用: (例: ドラが対子になっている、ドラを暗刻にできる可能性があるなど)
---10. 待ちの形: (例: 両面待ち、三面待ち、シャンポン待ちなど)
---11. 手牌の効率: (例: 孤立牌が少ない、無駄牌が少ないなど)
---12. 高得点の手の可能性: (例: 跳満以上の手になる可能性がある、倍満以上の手になる可能性があるなど)
-
-- 萬子はm, 筒子はp, 索子はsと呼びます。(例 1萬→1m 6筒→6p 8索→8s)
-- 東、南、西、北、白、發、中が選択されても萬子はm, 筒子はp, 索子はsと呼びます。
-- ドラは{doraA}です
-- 自風は{player_wind}です
-- 場風は{round_wind}です
-
-### 例：
-手牌: 4m, 4m, 6m, 1p, 7p, 9p, 1s, 2s, 3s, 東, 東, 白, 發, 發
-最適な捨て牌: 白
-
-理由:
-1. 対子の東と發を優先して活かすため。
-2. 字牌の中で無駄牌の白を先に切ることで手を進めやすくするため。
-3. 1pは次の候補となるが、まずは白を切ることで東や發のポンがしやすくなる。
-
-### ガイドライン：
-1. 役牌の重なりを優先する
-2. 対子や三色ができる可能性がある場合、それらを優先して残す
-3. 孤立している牌（他の牌と繋がりにくい牌）を優先して切る
-
-### 最後に:
-
-- 完成した文章に改行等を含めて読みやすいように清書してください。
--- ダメな例
-自風:東,場風:西 捨て牌: 5p 手牌: [4m,5m,6m,8m,2p,2p,3p,8p,3s,8s,東,白,發] まず字牌の發を切るのが良いと思います。 理由としては手牌に4m,5m,6mと順子がすでにあり、發は孤立していて使いにくいからです。 5pを切るのは、まだ2pや8pで変化する可能性も残っているので、少しもったいないかもしれません。
-
--- 良い例
-<strong>自風:東,場風:西<br>捨て牌: 5p<br>手牌: [4m,5m,6m,8m,2p,2p,3p,8p,3s,8s,東,白,發] <br><br></strong>まず字牌の發を切るのが良いと思うのです。 <br>理由はとしては手牌に4m,5m,6mと順子がすでにあり、發は孤立していて使いにくいからです。 <br>5pを切るのは、まだ2pや8pで変化する可能性も残っているので、少しもったいないかもしれませんのです。
-"""
-
-        # Gemini AIに問い合わせる
-        model = configure_api()
-        response = model.generate_content(prompt)
-
-        # 応答をJSON形式で返す
-        commentary = f"【選択された牌】{selectedTile} 【手牌】{', '.join(hand)}\n{response.text}"
-        return JsonResponse({'commentary': response.text})
+            return JsonResponse(response_data)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
     else:
         return JsonResponse({'error': 'Invalid request'}, status=400)
-
