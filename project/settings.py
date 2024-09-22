@@ -11,7 +11,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-b(4_m8w+ghqq^(d7ho4$)g2nu0
 
 DEBUG = os.getenv("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = ['your-app-name.onrender.com', '127.0.0.1', 'localhost']
+ALLOWED_HOSTS = ['mahjong-gpt.onrender.com', '127.0.0.1', 'localhost']
 
 INSTALLED_APPS = [
     "django.contrib.admin",
